@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+dist/
+test-results/
+playwright-report/
+wrangler.production.json
+
+
+.research/

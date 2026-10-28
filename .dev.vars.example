@@ -1,0 +1,14 @@
+# Copy to .dev.vars for local development only; never commit .dev.vars.
+# Generate two different random tokens with at least 32 characters each.
+ADMIN_TOKEN=
+CONVERSION_TOKEN=
+# Public operator details: use the actual operator name and a monitored contact.
+# Keep blank locally until supplied. Public deployment requires the name plus
+# a valid email or public HTTPS contact form URL. These values will be published.
+OPERATOR_NAME=
+CONTACT_EMAIL=
+PUBLIC_CONTACT_URL=
+# Optional: paste only the Search Console HTML verification token, not a meta tag.
+GOOGLE_SITE_VERIFICATION=
+# SITE_URL is intentionally omitted locally: development pages must not be indexed.
+# AI is optional. Local tests never call a billable remote AI service.

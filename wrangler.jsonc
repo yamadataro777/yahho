@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "shigoto-dougu",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
+  "d1_databases": [{ "binding": "DB", "database_name": "affiliate-lab", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "vars": { "SITE_NAME": "しごと道具", "ENABLE_AUTOPUBLISH": "false", "MAX_DAILY_ARTICLES": "1" },
+  "triggers": { "crons": ["15 21 * * *"] },
+  "observability": { "enabled": true }
+}
