@@ -18,7 +18,7 @@ interface Event { id: string; visit_id: string; kind: string; page_path: string;
 /** Returns a validated public pathname and its editorial category. Never stores query text. */
 export async function publicPage(env: Env, path: unknown): Promise<{ path: string; category: string } | null> {
   if (typeof path !== 'string' || path.length > 160 || !/^\/(?:[a-z0-9_-]+(?:\/[a-z0-9_-]+)*)?$/.test(path)) return null;
-  if (['/', '/tools', '/compare', '/guides', '/diagnosis', '/about', '/contact', '/disclosure', '/privacy'].includes(path)) return { path, category: '' };
+  if (['/', '/tools', '/compare', '/guides', '/diagnosis', '/about', '/contact', '/disclosure', '/privacy', '/editorial-policy'].includes(path)) return { path, category: '' };
   if (path.startsWith('/tools/')) { const tool = TOOLS.find(t => path === '/tools/' + t.id); return tool ? { path, category: tool.category } : null; }
   if (path.startsWith('/compare/')) { const comparison = COMPARISONS.find(c => path === '/compare/' + c.slug); return comparison ? { path, category: TOOLS.find(t => t.id === comparison.toolIds[0])?.category ?? '' } : null; }
   if (path.startsWith('/guides/')) { const article = await getArticle(env, path.slice(8)); return article ? { path, category: article.offerCategory } : null; }
@@ -128,6 +128,8 @@ export interface AnalyticsReport {
   totals: { visits: number; pageViews: number; diagnoses: number; clicks: number; confirmedConversions: number; confirmedRevenueJpy: number; unattributedConversions: number };
   rows: AnalyticsRow[];
   campaignRows: AnalyticsRow[];
+  /** Untagged search visits grouped by entry page, including later navigation in that visit. */
+  organicRows: AnalyticsRow[];
   recentConversions: { externalId: string; offerId: string; commissionJpy: number; occurredAt: string; status: string; clickId: string | null; pagePath: string; source: string; campaignId: string }[];
 }
 
@@ -135,29 +137,33 @@ export async function analyticsReport(env: Env, now = new Date(), startAt?: Date
   if (startAt && (!Number.isFinite(startAt.getTime()) || startAt.getTime() > now.getTime() || startAt.getTime() < now.getTime() - 90 * DAY)) throw new Error('invalid_analytics_window');
   const end = now.toISOString(), start = (startAt ?? new Date(now.getTime() - 30 * DAY)).toISOString(), matureBefore = new Date(now.getTime() - 7 * DAY).toISOString();
   // Aggregate before joining conversion values so repeat purchases cannot multiply visits or clicks.
-  async function grouped(byPage: boolean): Promise<AnalyticsRow[]> {
-    const groups = `v.source, v.campaign_id${byPage ? ', e.page_path' : ''}`;
-    const result = await env.DB.prepare(`SELECT ${byPage ? 'e.page_path' : "''"} AS pagePath, ${byPage ? 'MAX(e.category)' : "''"} AS category, v.source, v.campaign_id AS campaignId,
-      COUNT(DISTINCT e.visit_id) AS visits, SUM(e.kind='page_view') AS pageViews, SUM(e.kind='diagnosis') AS diagnoses,
-      SUM(e.kind='affiliate_click') AS clicks, SUM(e.kind='affiliate_click' AND e.tracked_click=1) AS attributableClicks,
-      SUM(e.kind='affiliate_click' AND e.created_at<=?) AS matureClicks,
-      SUM(e.kind='affiliate_click' AND e.tracked_click=1 AND e.created_at<=?) AS matureAttributableClicks,
+  async function grouped(mode: 'page' | 'campaign' | 'organic'): Promise<AnalyticsRow[]> {
+    const byPage = mode === 'page', organic = mode === 'organic';
+    const groups = `v.source, v.campaign_id${byPage ? ', e.page_path' : organic ? ', v.landing_path' : ''}`;
+    const result = await env.DB.prepare(`SELECT ${byPage ? 'e.page_path' : organic ? 'v.landing_path' : "''"} AS pagePath, ${byPage ? 'MAX(e.category)' : "''"} AS category, v.source, v.campaign_id AS campaignId,
+      COUNT(DISTINCT ${organic ? 'v.id' : 'e.visit_id'}) AS visits, COALESCE(SUM(e.kind='page_view'),0) AS pageViews, COALESCE(SUM(e.kind='diagnosis'),0) AS diagnoses,
+      COALESCE(SUM(e.kind='affiliate_click'),0) AS clicks, COALESCE(SUM(e.kind='affiliate_click' AND e.tracked_click=1),0) AS attributableClicks,
+      COALESCE(SUM(e.kind='affiliate_click' AND e.created_at<=?),0) AS matureClicks,
+      COALESCE(SUM(e.kind='affiliate_click' AND e.tracked_click=1 AND e.created_at<=?),0) AS matureAttributableClicks,
       COUNT(DISTINCT CASE WHEN e.kind='affiliate_click' AND e.tracked_click=1 AND e.created_at<=? THEN e.visit_id END) AS matureAttributableVisits,
       SUM(CASE WHEN e.kind='affiliate_click' AND e.tracked_click=1 AND e.created_at<=? AND EXISTS(SELECT 1 FROM conversions c WHERE c.click_id=e.id AND c.status='confirmed' AND c.occurred_at<=?) THEN 1 ELSE 0 END) AS convertedClicks,
       COUNT(DISTINCT CASE WHEN e.kind='affiliate_click' AND e.tracked_click=1 AND e.created_at<=? AND EXISTS(SELECT 1 FROM conversions c WHERE c.click_id=e.id AND c.status='confirmed' AND c.occurred_at<=?) THEN e.visit_id END) AS convertedVisits,
       SUM(CASE WHEN e.kind='affiliate_click' THEN COALESCE((SELECT SUM(c.commission_jpy) FROM conversions c WHERE c.click_id=e.id AND c.status='confirmed' AND c.occurred_at<=?),0) ELSE 0 END) AS confirmedRevenueJpy
-      FROM growth_events e JOIN growth_visits v ON v.id=e.visit_id WHERE e.created_at>=? AND e.created_at<=? GROUP BY ${groups} ORDER BY visits DESC, campaignId, pagePath LIMIT 500`)
-      .bind(matureBefore, matureBefore, matureBefore, matureBefore, end, matureBefore, end, end, start, end).all<Omit<AnalyticsRow, 'ctr' | 'conversionRate'>>();
+      ${organic
+        ? "FROM growth_visits v LEFT JOIN growth_events e ON e.visit_id=v.id AND e.created_at>=? AND e.created_at<=? WHERE v.source='search' AND v.campaign_id='' AND v.started_at>=? AND v.started_at<=?"
+        : 'FROM growth_events e JOIN growth_visits v ON v.id=e.visit_id WHERE e.created_at>=? AND e.created_at<=?'}
+      GROUP BY ${groups} ORDER BY visits DESC, campaignId, pagePath LIMIT 500`)
+      .bind(matureBefore, matureBefore, matureBefore, matureBefore, end, matureBefore, end, end, start, end, ...(organic ? [start, end] : [])).all<Omit<AnalyticsRow, 'ctr' | 'conversionRate'>>();
     return result.results.map(row => ({ ...row, ctr: row.pageViews > 0 ? row.clicks / row.pageViews : null, conversionRate: row.matureAttributableClicks > 0 ? row.convertedClicks / row.matureAttributableClicks : null }));
   }
-  const [rows, campaignRows, events, visits, conversions, recent] = await Promise.all([
-    grouped(true), grouped(false),
+  const [rows, campaignRows, organicRows, events, visits, conversions, recent] = await Promise.all([
+    grouped('page'), grouped('campaign'), grouped('organic'),
     env.DB.prepare("SELECT SUM(kind='page_view') AS pageViews, SUM(kind='diagnosis') AS diagnoses, SUM(kind='affiliate_click') AS clicks FROM growth_events WHERE created_at>=? AND created_at<=?").bind(start, end).first<{ pageViews: number; diagnoses: number; clicks: number }>(),
     env.DB.prepare('SELECT COUNT(*) AS n FROM growth_visits WHERE started_at>=? AND started_at<=?').bind(start, end).first<{ n: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(commission_jpy),0) AS revenue, COALESCE(SUM(click_id IS NULL),0) AS unattributed FROM conversions WHERE status='confirmed' AND occurred_at>=? AND occurred_at<=?").bind(start, end).first<{ n: number; revenue: number; unattributed: number }>(),
     env.DB.prepare('SELECT external_id AS externalId, offer_id AS offerId, commission_jpy AS commissionJpy, occurred_at AS occurredAt, status, click_id AS clickId, attributed_page_path AS pagePath, attributed_source AS source, attributed_campaign_id AS campaignId FROM conversions ORDER BY occurred_at DESC, external_id DESC LIMIT 50').all<AnalyticsReport['recentConversions'][number]>(),
   ]);
-  return { window: { start, end, matureBefore }, totals: { visits: visits?.n ?? 0, pageViews: events?.pageViews ?? 0, diagnoses: events?.diagnoses ?? 0, clicks: events?.clicks ?? 0, confirmedConversions: conversions?.n ?? 0, confirmedRevenueJpy: conversions?.revenue ?? 0, unattributedConversions: conversions?.unattributed ?? 0 }, rows, campaignRows, recentConversions: recent.results };
+  return { window: { start, end, matureBefore }, totals: { visits: visits?.n ?? 0, pageViews: events?.pageViews ?? 0, diagnoses: events?.diagnoses ?? 0, clicks: events?.clicks ?? 0, confirmedConversions: conversions?.n ?? 0, confirmedRevenueJpy: conversions?.revenue ?? 0, unattributedConversions: conversions?.unattributed ?? 0 }, rows, campaignRows, organicRows, recentConversions: recent.results };
 }
 
 export async function purgeAnalytics(env: Env, now = new Date()): Promise<void> {

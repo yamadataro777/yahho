@@ -73,6 +73,7 @@ it('runs the publication, maintenance and daily locking pipeline against the act
     expect(first.generation).toEqual({ status: 'published', slug: 'guide-2026-10-28-design', reasons: [] });
     expect(first.editorial).toEqual({ basis: 'diagnoses_30d', category: 'design', diagnoses: 40, sourceIds: ['canva', 'adobe-express'] });
     expect(first.disabledOffers).toBe(1);
+    expect(first.socialDrafts).toEqual([]);
     const published = (await listArticles(env)).find(item => item.slug === first.generation.slug);
     expect(published?.title).toBe(article().title);
     expect(published?.sourceIds).toEqual(['canva', 'adobe-express']);

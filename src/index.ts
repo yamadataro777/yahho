@@ -8,7 +8,7 @@ import { parseRecommendationInput, recommendTools } from './recommend';
 import * as view from './views';
 import { escapeHtml as e } from './html';
 import { COMPARISONS } from './comparisons';
-import { siteOrigin, sitemap, breadcrumbSchema } from './seo';
+import { siteOrigin, sitemap, breadcrumbSchema, articleSchema } from './seo';
 import { operatorProfile } from './site-config';
 import { handleAnalytics } from './analytics';
 import { handleGrowth } from './growth';
@@ -31,7 +31,7 @@ function secure(response: Response, path: string): Response {
  return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
 }
 async function route(request: Request,env: Env,ctx: ExecutionContext):Promise<Response>{
- const url=new URL(request.url),path=url.pathname.replace(/\/$/,'')||'/';
+ const url=new URL(request.url),path=url.pathname.replace(/\/+$/,'')||'/';
  if(request.method!=='GET'&&request.method!=='HEAD'){
   const origin=request.headers.get('origin');if(origin && origin!==url.origin)return json({error:'別のサイトからの操作は受け付けていません。'},403);
  }
@@ -79,7 +79,7 @@ async function route(request: Request,env: Env,ctx: ExecutionContext):Promise<Re
   return new Response(sitemap(env,articles),{headers:{'content-type':'application/xml; charset=utf-8'}});
  }
  const html=(title:string,description:string,body:string,status=200,schema?:unknown,noindex=false)=>new Response(view.layout(title,description,body,path,env,schema,{noindex:noindex||status!==200}),{status,headers:{'content-type':'text/html; charset=utf-8','cache-control':'no-store'}});
- if(path==='/')return html('その仕事、もっと軽く。','個人事業主・小さなチームに合うAI・仕事効率化ツールを、用途別診断と比較ガイドで選ぼう。',view.home(await listArticles(env)));
+ if(path==='/')return html('AI・仕事効率化ツールの比較と選び方','個人事業主・小さなチーム向けに、議事録・自動化・資料作成の仕事からAI・効率化ツールを比較。選び方、導入手順、使えるテンプレートをまとめています。',view.home(await listArticles(env)));
  if(path==='/tools'){
   const category=url.searchParams.get('category')??'',q=(url.searchParams.get('q')??'').slice(0,100);
   return html('仕事の道具を探す','AI文章作成・会議・デザイン・自動化・情報整理の道具を目的から探して比較。',view.toolsPage(category,q),200,undefined,url.searchParams.has('q')||url.searchParams.has('category'));
@@ -90,15 +90,16 @@ async function route(request: Request,env: Env,ctx: ExecutionContext):Promise<Re
  }
  if(path.startsWith('/compare/')){
   const comparison=COMPARISONS.find(c=>c.slug===path.slice(9));
-  if(comparison)return html(comparison.title,comparison.description,view.comparisonLanding(comparison,await listOffers(env)),200,breadcrumbSchema(env,[{name:'ホーム',path:'/'},{name:'比較する',path:'/compare'},{name:comparison.title,path}]));
+  if(comparison)return html(comparison.title,comparison.description,view.comparisonLanding(comparison,await listOffers(env),await listArticles(env)),200,breadcrumbSchema(env,[{name:'ホーム',path:'/'},{name:'比較する',path:'/compare'},{name:comparison.title,path}]));
  }
  if(path==='/diagnosis')return html('あなたに合う道具を診断','用途・予算・使う人数の3つの質問で、仕事に合う道具を理由つきで提案。',view.diagnosisPage());
  if(path==='/guides')return html('選び方ガイド','AI・効率化ツールを選ぶ前に読みたい実用ガイド。',view.guidesPage(await listArticles(env)));
+ if(path==='/editorial-policy')return html('編集方針と比較の基準','しごと道具の執筆・比較方法、情報源、検証範囲、広告との関係、訂正の方針。',view.editorialPolicyPage(env),200,breadcrumbSchema(env,[{name:'ホーム',path:'/'},{name:'編集方針と比較の基準',path}]));
  if(path.startsWith('/tools/')){
-  const tool=TOOLS.find(t=>t.id===path.slice(7));if(tool)return html(tool.name+'の特徴と選び方',tool.description,view.toolDetail(tool,await listOffers(env),await listArticles(env)));
+  const tool=TOOLS.find(t=>t.id===path.slice(7));if(tool)return html(tool.name+'の特徴と選び方',tool.description,view.toolDetail(tool,await listOffers(env),await listArticles(env)),200,breadcrumbSchema(env,[{name:'ホーム',path:'/'},{name:'道具を探す',path:'/tools'},{name:tool.name,path}]));
  }
  if(path.startsWith('/guides/')){
-  const article=await getArticle(env,path.slice(8));if(article)return html(article.title,article.description,view.articlePage(article,await listOffers(env)),200,{'@context':'https://schema.org','@type':'Article',headline:article.title,description:article.description,datePublished:article.publishedAt,dateModified:article.updatedAt,author:{'@type':'Organization',name:'しごと道具 編集部'},...(origin?{mainEntityOfPage:origin+path}:{})});
+  const article=await getArticle(env,path.slice(8));if(article)return html(article.title,article.description,view.articlePage(article,await listOffers(env),await listArticles(env)),200,[articleSchema(env,article),breadcrumbSchema(env,[{name:'ホーム',path:'/'},{name:'選び方ガイド',path:'/guides'},{name:article.title,path}])]);
  }
  if(['/about','/privacy','/disclosure'].includes(path))return html(path==='/about'?'このサイトについて':path==='/privacy'?'プライバシーポリシー':'広告・編集方針','しごと道具の運営・広告・プライバシーに関する方針。',view.policyPage(path.slice(1),env));
  if(path==='/contact'){
@@ -112,6 +113,12 @@ export default {
  async fetch(request:Request,env:Env,ctx:ExecutionContext):Promise<Response>{
   let response:Response;
   try{response=await route(request,env,ctx);}catch{console.error('request_failed',new URL(request.url).pathname);response=json({error:'一時的に利用できません。しばらくしてからお試しください。'},503);}
+  // Consolidate successful public documents, preserving attribution/query bytes.
+  // Never redirect API writes, private admin pages, assets, or genuine 404 responses.
+  const url=new URL(request.url),canonicalPath=url.pathname.replace(/\/+$/,'')||'/';
+  if((request.method==='GET'||request.method==='HEAD')&&response.status===200&&response.headers.get('content-type')?.startsWith('text/html')&&!url.pathname.startsWith('/admin')&&url.pathname!==canonicalPath){
+   url.pathname=canonicalPath;response=new Response(null,{status:308,headers:{location:url.href,'cache-control':'public, max-age=3600'}});
+  }
   if(request.method==='HEAD')response=new Response(null,{status:response.status,headers:response.headers});
   return secure(response,new URL(request.url).pathname);
  },

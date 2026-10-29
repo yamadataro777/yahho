@@ -284,11 +284,14 @@ export async function runAutomation(env: Env, options: { now?: Date; fetcher?: t
         }
       }
     }
-    // Drafts are returned for editorial use; this worker never posts to social platforms.
-    const editorialArticles = report.editorial.category ? ARTICLES.filter(article => article.offerCategory === report.editorial.category) : ARTICLES;
-    const candidates = editorialArticles.length ? editorialArticles : ARTICLES;
-    const featured = candidates[Math.floor(now.getTime() / 86_400_000) % candidates.length];
-    if (featured) report.socialDrafts.push({ articleSlug: featured.slug, text: featured.description + '\n\n仕事に合う道具を選ぶための確認ポイントをまとめました。', link: '/guides/' + featured.slug });
+    // Organic-search operation needs no social drafts. Opt-in drafts stay local to
+    // this report; this worker never posts to social platforms.
+    if (env.ENABLE_SOCIAL_DRAFTS === 'true') {
+      const editorialArticles = report.editorial.category ? ARTICLES.filter(article => article.offerCategory === report.editorial.category) : ARTICLES;
+      const candidates = editorialArticles.length ? editorialArticles : ARTICLES;
+      const featured = candidates[Math.floor(now.getTime() / 86_400_000) % candidates.length];
+      if (featured) report.socialDrafts.push({ articleSlug: featured.slug, text: featured.description + '\n\n仕事に合う道具を選ぶための確認ポイントをまとめました。', link: '/guides/' + featured.slug });
+    }
   } catch (error) {
     report.status = 'failed';
     report.generation = { status: 'skipped', reasons: [error instanceof Error && error.message === 'workers_ai_timeout' ? 'workers_ai_timeout' : 'automation_failed_no_article_published'] };

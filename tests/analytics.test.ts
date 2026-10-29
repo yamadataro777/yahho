@@ -85,6 +85,32 @@ describe('anonymous visit boundaries and deduplicated events',()=>{
 });
 
 describe('approved click IDs and actual commission attribution',()=>{
+  it('measures untagged search entry cohorts across navigation without counting tagged search or direct visits twice',async()=>{
+    await saveOffer();const date=ago(10);
+    const firstResponse=await telemetry('visit',{path:'/tools/claude',source:'search'},date);
+    const first=await firstResponse.json() as {visitId:string};
+    await event(first.visitId,'page_view',date);
+    await event(first.visitId,'page_view',date,{path:'/compare/chatgpt-vs-claude'});
+    const click=await event(first.visitId,'affiliate_click',date,{path:'/compare/chatgpt-vs-claude',offerId:'claude',attributionRequested:true});
+    expect((await admin('/api/admin/conversions',{externalId:'organic-purchase',offerId:'claude',commissionJpy:800,occurredAt:new Date(date.getTime()+DAY).toISOString(),clickId:click.input.eventId})).status).toBe(201);
+    // A successfully observed entry is counted even if the subsequent event request is lost.
+    expect((await telemetry('visit',{path:'/tools/claude',source:'search'},date)).status).toBe(201);
+    const other=await (await telemetry('visit',{path:'/tools/chatgpt',source:'search'},date)).json() as {visitId:string};
+    await event(other.visitId,'page_view',date,{path:'/tools/chatgpt'});
+    db.prepare('INSERT INTO growth_campaigns(id,name,source,hypothesis_id,target_path,created_at) VALUES(?,?,?,?,?,?)').run('tagged-search','Tagged search','search','writing-need','/tools/claude',date.toISOString());
+    const tagged=await visit(date,'tagged-search');await event(tagged.visitId,'page_view',date);
+    const direct=await visit(date,'');await event(direct.visitId,'page_view',date);
+    const report=await analyticsReport(env);
+    expect(report.totals).toMatchObject({visits:5,pageViews:5,clicks:1,confirmedConversions:1,confirmedRevenueJpy:800});
+    expect(report.organicRows).toHaveLength(2);
+    expect(report.organicRows.find(row=>row.pagePath==='/tools/claude')).toMatchObject({source:'search',campaignId:'',visits:2,pageViews:2,clicks:1,matureAttributableVisits:1,convertedClicks:1,confirmedRevenueJpy:800});
+    expect(report.organicRows.find(row=>row.pagePath==='/tools/chatgpt')).toMatchObject({visits:1,clicks:0,confirmedRevenueJpy:0});
+    expect(report.campaignRows.find(row=>row.campaignId==='tagged-search')).toMatchObject({visits:1,clicks:0});
+    expect(report.organicRows.reduce((sum,row)=>sum+row.visits,0)).toBe(3);
+    expect(report.organicRows.some(row=>row.pagePath==='/compare/chatgpt-vs-claude')).toBe(false);
+    expect(db.prepare('SELECT attributed_landing_path,attributed_page_path FROM conversions').get()).toMatchObject({attributed_landing_path:'/tools/claude',attributed_page_path:'/compare/chatgpt-vs-claude'});
+    expect((await analyticsReport(env,now(),ago(2))).organicRows).toEqual([]);
+  });
   it('preserves issued URL by default and appends only an explicitly approved collision-free parameter',async()=>{
     const value=await saveOffer(false), first=await visit();
     const a=await event(first.visitId,'affiliate_click',now(),{offerId:'claude',attributionRequested:true});

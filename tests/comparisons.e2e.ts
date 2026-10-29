@@ -1,6 +1,6 @@
 import {test,expect} from '@playwright/test';
 test('comparison landing pages connect from index to guides and official tool pages',async({page})=>{
- await page.goto('/compare');await page.getByRole('link',{name:'MakeとZapierの比較｜作業の流れから選ぶ自動化ツール'}).click();
+ await page.goto('/compare');await page.locator('main a[href="/compare/make-vs-zapier"]').first().click();
  await expect(page.locator('h1')).toHaveCount(1);await expect(page.locator('h1')).toContainText('MakeとZapier');
  await expect(page.locator('table')).toContainText('Make');await expect(page.locator('table')).toContainText('Zapier');
  await page.getByRole('link',{name:'導入前の確認手順を詳しく読む'}).click();await expect(page).toHaveURL(/\/guides\/make-zapier-workflow/);

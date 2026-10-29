@@ -40,7 +40,7 @@ export function productionConfig(base, env, databaseId) {
   const config = structuredClone(base);
   const profile = operatorProfile(env);
   config.account_id = env.CLOUDFLARE_ACCOUNT_ID;
-  config.vars = { ...config.vars, SITE_URL: publicOrigin(env.SITE_URL), ENABLE_AUTOPUBLISH: env.ENABLE_AUTOPUBLISH === 'true' ? 'true' : 'false', MAX_DAILY_ARTICLES: env.MAX_DAILY_ARTICLES ?? '1' };
+  config.vars = { ...config.vars, SITE_URL: publicOrigin(env.SITE_URL), ENABLE_AUTOPUBLISH: env.ENABLE_AUTOPUBLISH === 'true' ? 'true' : 'false', ENABLE_SOCIAL_DRAFTS: env.ENABLE_SOCIAL_DRAFTS === 'true' ? 'true' : 'false', MAX_DAILY_ARTICLES: env.MAX_DAILY_ARTICLES ?? '1' };
   // Clear old optional display settings when omitted, so stale contact or verification
   // values cannot silently remain in a generated configuration.
   for (const key of ['OPERATOR_NAME', 'CONTACT_EMAIL', 'PUBLIC_CONTACT_URL', 'GOOGLE_SITE_VERIFICATION']) delete config.vars[key];

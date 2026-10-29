@@ -1,5 +1,5 @@
 import {describe,it,expect} from 'vitest';
-import {siteOrigin,sitemap,breadcrumbSchema} from '../src/seo';
+import {siteOrigin,sitemap,breadcrumbSchema,articleSchema} from '../src/seo';
 import {layout,contactPage,policyPage,comparisonLanding} from '../src/views';
 import {ARTICLES} from '../src/content';
 import {COMPARISONS} from '../src/comparisons';
@@ -18,6 +18,21 @@ describe('public indexing and share metadata',()=>{
  });
  it('sitemap includes comparison pages and article dates, only supplied published articles',()=>{
   const xml=sitemap(env,ARTICLES.slice(0,1));expect(xml).toContain('/compare/make-vs-zapier');expect(xml).toContain('/guides/'+ARTICLES[0].slug);expect(xml).not.toContain('/guides/'+ARTICLES[1].slug);expect(xml).toContain('<lastmod>2026-10-28</lastmod>');expect(xml).not.toContain('/admin');expect(sitemap({} as Env,ARTICLES)).not.toContain('<url>');
+ });
+ it('lists only indexable contact URLs and unique valid article URLs, without invented last-modified dates',()=>{
+  const {CONTACT_EMAIL,...withoutContact}=env;
+  const article={...ARTICLES[0],updatedAt:'2999-01-01'};
+  const xml=sitemap(withoutContact as Env,[article,article,{...article,slug:'../admin'}]);
+  expect(xml).not.toContain('/contact</loc>');expect(xml).toContain('/editorial-policy</loc>');
+  expect(xml.split('/guides/'+article.slug+'</loc>').length-1).toBe(1);
+  expect(xml).not.toContain('2999');expect(xml).not.toContain('../admin');
+  expect(sitemap({...withoutContact,PUBLIC_CONTACT_URL:'https://shigoto-toolbox.jp/support'} as Env,[])).toContain('/contact</loc>');
+ });
+ it('attributes guides to the visible editorial policy without fabricated reviews or ratings',()=>{
+  const data=articleSchema(env,ARTICLES[0]);
+  expect(data).toMatchObject({'@type':'Article',mainEntityOfPage:'https://shigoto-toolbox.jp/guides/'+ARTICLES[0].slug,author:{name:'しごと道具 編集部',url:'https://shigoto-toolbox.jp/editorial-policy'},publisher:{url:'https://shigoto-toolbox.jp/about'}});
+  expect(JSON.stringify(data)).not.toMatch(/aggregateRating|reviewRating|ratingValue/);
+  expect(articleSchema({} as Env,ARTICLES[0])).toBeNull();
  });
  it('comparison has one h1, actual candidates and official references',()=>{
   const html=comparisonLanding(COMPARISONS[0],[]);expect(html.match(/<h1>/g)?.length).toBe(1);expect(html).toContain('Make');expect(html).toContain('Zapier');expect(html).toContain('よくある質問');expect(html).toContain('https://www.make.com/en');expect(html).not.toContain('data-offer=');

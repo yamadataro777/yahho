@@ -22,3 +22,31 @@ diagnosisForm?.addEventListener('submit',async event=>{
  } catch(error) { message.textContent=error.message || '接続を確認して、もう一度お試しください。'; }
  finally {button.disabled=false;}
 });
+
+const meetingText = document.getElementById('meeting-template-text');
+if (meetingText) {
+ const initial = meetingText.value;
+ const status = document.getElementById('template-status');
+ document.getElementById('template-actions').hidden = false;
+ document.getElementById('template-copy').addEventListener('click', async () => {
+  try {
+   await navigator.clipboard.writeText(meetingText.value);
+   status.textContent = 'コピーしました。お使いの文書アプリに貼り付けてください。';
+  } catch {
+   meetingText.focus(); meetingText.select();
+   status.textContent = 'テキストを選択しました。端末のコピー操作でコピーしてください。';
+  }
+ });
+ document.getElementById('template-download').addEventListener('click', () => {
+  const url = URL.createObjectURL(new Blob([meetingText.value], {type:'text/plain;charset=utf-8'}));
+  const link = document.createElement('a');
+  link.href = url; link.download = 'meeting-notes.txt';
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  status.textContent = 'テキストファイルの保存を開始しました。';
+ });
+ document.getElementById('template-reset').addEventListener('click', () => {
+  meetingText.value = initial;
+  status.textContent = '初期テンプレートに戻しました。';
+ });
+}

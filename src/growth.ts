@@ -2,7 +2,7 @@ import { CATEGORIES, TOOLS } from './content';
 import { COMPARISONS } from './comparisons';
 import { getArticle, isPublicHostname, listOffers, isUsableOffer } from './store';
 import { tokenMatches } from './admin';
-import { analyticsReport, publicPage } from './analytics';
+import { analyticsReport, publicPage, type AnalyticsReport } from './analytics';
 import { siteOrigin } from './seo';
 import type { Env } from './types';
 
@@ -16,9 +16,10 @@ export interface Evidence { id: string; hypothesisId: string; kind: typeof EVIDE
 export interface Campaign { id:string; name:string; source:string; hypothesisId:string; targetPath:string; status:'active'|'paused'; createdAt:string }
 export interface Observation { id:string; campaignId:string; periodStart:string; periodEnd:string; impressions:number; clicks:number; sourceUrl:string; observedAt:string }
 export interface GrowthMetrics { visits:number; clicks:number; attributableClicks:number; matureAttributableClicks:number; matureAttributableVisits:number; convertedClicks:number; convertedVisits:number; confirmedRevenueJpy:number }
+type GrowthCohort = {kind:'organic_search_landing';targetPath:string;source:'search'} | {kind:'campaign';campaignId:string;source:string};
 export interface GrowthDecision {
   id:string; hypothesisId:string; campaignId:string; kind:string; title:string; reason:string; action:string; metric:string;
-  baseline:GrowthMetrics; snapshot:{window:unknown; thresholds:typeof GROWTH_THRESHOLDS; evidenceIds:string[]; evidenceStatus:string};
+  baseline:GrowthMetrics; snapshot:{window:unknown; thresholds:typeof GROWTH_THRESHOLDS; evidenceIds:string[]; evidenceStatus:string;cohort?:GrowthCohort};
   status:'proposed'|'applied'|'dismissed'|'evaluated'; createdAt:string; updatedAt:string; note:string;
   appliedAt?:string; outcome?:{status:'insufficient_data'|'improved'|'declined'|'unchanged'|'criterion_met'; measuredAt:string; after:GrowthMetrics; beforeRate:number|null; afterRate:number|null; note:string};
 }
@@ -61,6 +62,12 @@ async function records<T>(env:Env,table:'growth_evidence'|'growth_observations'|
 export function evidenceIsFresh(item:Evidence,now:Date):boolean {const date=Date.parse(item.periodEnd?item.periodEnd+'T23:59:59.999Z':item.observedAt);return date<=now.getTime()+DAY&&Date.parse(item.observedAt)<=now.getTime()&&date>=now.getTime()-GROWTH_THRESHOLDS.freshDays*DAY;}
 const actualDemand=(item:Evidence)=>item.kind==='customer_quote'||(item.kind==='search_console'&&(item.metrics?.impressions??0)>0);
 const metrics=(row?:Partial<GrowthMetrics>):GrowthMetrics=>({visits:row?.visits??0,clicks:row?.clicks??0,attributableClicks:row?.attributableClicks??0,matureAttributableClicks:row?.matureAttributableClicks??0,matureAttributableVisits:row?.matureAttributableVisits??0,convertedClicks:row?.convertedClicks??0,convertedVisits:row?.convertedVisits??0,confirmedRevenueJpy:row?.confirmedRevenueJpy??0});
+function decisionMetrics(report:AnalyticsReport,decision:GrowthDecision):GrowthMetrics {
+  const cohort=decision.snapshot.cohort;
+  if(cohort?.kind==='organic_search_landing')return metrics(report.organicRows.find(row=>row.pagePath===cohort.targetPath));
+  // Old campaign-free decisions did not have an identifiable population. Do not mix all untagged traffic into them.
+  return metrics(decision.campaignId?report.campaignRows.find(row=>row.campaignId===decision.campaignId):undefined);
+}
 
 export function validateEvidence(input:Record<string,unknown>,now=new Date()):Evidence {
   const kind=plain(input.kind,'kind') as Evidence['kind'];if(!EVIDENCE_KINDS.includes(kind))throw new GrowthError('Invalid evidence kind');
@@ -108,42 +115,53 @@ async function saveObservation(env:Env,input:Record<string,unknown>,now:Date){
 }
 
 function recommendation(h:Hypothesis,c:Campaign|undefined,m:GrowthMetrics,e:Evidence[],impressions:number,hasOffer:boolean):{kind:string;title:string;reason:string;action:string;metric:string}{
+  const search=!c||c.source==='search';
   if(!e.some(actualDemand))return{kind:'research_demand',title:'需要の根拠を追加する',reason:'直近90日以内の顧客の悩み、または検索の実測記録がありません。サジェストや公式製品ページだけでは需要を確認できません。',action:`「${h.query}」の検索実績、または対象読者の具体的な悩みを出典・日付付きで収集する。`,metric:'demand_evidence'};
-  if(!c)return{kind:'prepare_campaign',title:'流入を区別するリンクを作る',reason:'この仮説に有効な集客リンクがありません。',action:'投稿または検索施策を1つ決め、専用のキャンペーンリンクを作成して配信先を記録する。',metric:'visits'};
+  if(search&&m.visits<GROWTH_THRESHOLDS.minVisits)return{kind:'collect_traffic',title:'検索への掲載と検索意図を確認する',reason:`この対象で計測できた検索経由の訪問は${m.visits}件です。運用上の観測目安${GROWTH_THRESHOLDS.minVisits}件未満のため、成約の良し悪しは判定しません。Search Consoleのクリックとは定義や期間が異なり、個別の検索語は訪問へ紐付けません。`,action:'Search Consoleで対象URLのインデックス、検索語、表示回数、クリックを確認する。掲載状況に問題がなければ、検索意図に対する回答・タイトル・内部リンクを一項目ずつ改善する。通常のURLで計測でき、SNS投稿や計測パラメータは不要。',metric:'visits'};
   if(m.visits<100)return{kind:'collect_traffic',title:impressions>=1000?'投稿の切り口を比較する':'集客の実測を増やす',reason:`計測できた訪問は${m.visits}件で、判断目安の100件に届いていません。${impressions>=1000?'媒体の表示記録はありますが、サイト訪問との定義・期間の違いも確認してください。':''}`,action:'対象読者の悩みを冒頭に置いた投稿を別キャンペーンとして試し、表示・リンククリックとサイト訪問をそれぞれ記録する。',metric:'visits'};
   if(!hasOffer)return{kind:'connect_offer_measurement',title:'計測対象の広告を接続する',reason:'このページに対応する有効な広告がありません。通常の公式リンクは広告クリックとして計測しないため、クリック0回を導線の失敗とは判断しません。',action:'提携済み案件の対象製品と掲載条件を確認して有効化し、計測対象になってから導線を比較する。',metric:'eligible_clicks'};
   if(m.clicks/m.visits<GROWTH_THRESHOLDS.lowClickRate)return{kind:'test_cta',title:'記事から比較・広告への導線を試す',reason:`訪問${m.visits}件に対して広告クリック${m.clicks}回です。クリック回数/訪問数が運用目安5%未満です。これは業界基準や因果の証明ではありません。`,action:'対象者と比較基準を記事冒頭に明記し、次に確認できる条件をCTAに添える。変更内容を記録して再計測する。',metric:'click_rate'};
   if(!m.attributableClicks)return{kind:'enable_attribution',title:'成果を結び付けられる案件を確認する',reason:'クリックIDを渡せる広告クリックがありません。成果が付かないことを、成約率が低いと判断しません。',action:'ASPのサブID対応とURL変更条件を確認し、対応案件だけ計測パラメータと成果通知のclickIdを接続する。',metric:'attribution'};
   if(m.matureAttributableClicks<30||m.matureAttributableVisits<20)return{kind:'collect_conversions',title:'成約を判断できる件数を待つ',reason:`7日以上経過した成果紐付け可能クリックは${m.matureAttributableClicks}件です。クリック30件かつ異なる訪問20件の目安までは勝敗を決めません。訪問IDは人数ではありません。`,action:'ASPの承認期間と未確定成果を確認し、成熟した計測対象クリックを増やす。',metric:'conversion_rate'};
   if(m.convertedClicks===0)return{kind:'review_offer',title:'案件条件と読者の意図を確認する',reason:`成熟した計測対象クリック${m.matureAttributableClicks}件に紐付く確定成約はありません。承認待ち・通知不備・条件の不一致を切り分ける必要があります。`,action:'ASPの成果通知と承認期間を確認した後、記事で案内する対象者と申込み条件を揃える。変更は1項目ずつ記録する。',metric:'conversion_rate'};
-  if(m.convertedClicks>=3&&m.convertedVisits>=3)return{kind:'expand_test',title:'成約につながった悩みで追加検証する',reason:`成熟した計測対象クリック${m.matureAttributableClicks}件のうち${m.convertedClicks}件に確定成約が紐付き、最近の需要記録があります。再現性や因果は未確定です。`,action:'同じ悩みの別の具体例を追加記事・投稿の候補にし、別キャンペーンで再検証する。既存の推薦順位は変えない。',metric:'conversion_rate'};
+  if(m.convertedClicks>=3&&m.convertedVisits>=3)return{kind:'expand_test',title:'成約につながった悩みで追加検証する',reason:`成熟した計測対象クリック${m.matureAttributableClicks}件のうち${m.convertedClicks}件に確定成約が紐付き、最近の需要記録があります。再現性や因果は未確定です。`,action:search?'既存ページに不足する具体例を補い、別の検索意図が確認できた場合だけ補助記事を作る。検索入口ページごとに再検証し、推薦順位は変えない。':'同じ悩みの別の具体例を追加記事・投稿の候補にし、別キャンペーンで再検証する。既存の推薦順位は変えない。',metric:'conversion_rate'};
   return{kind:'continue_test',title:'同じ条件で検証を続ける',reason:`確定成約が紐付いたクリックは${m.convertedClicks}件です。追加検証の目安3件に届いていません。`,action:'案件と記事の条件を記録したまま、追加の確定成果を待つ。',metric:'conversion_rate'};
 }
 
 export async function evaluateGrowth(env:Env,now=new Date()):Promise<GrowthEvaluation>{
   const [hyps,camps,evidence,observations,existing,report,offers]=await Promise.all([hypotheses(env),campaigns(env),records<Evidence>(env,'growth_evidence'),records<Observation>(env,'growth_observations'),records<GrowthDecision>(env,'growth_decisions'),analyticsReport(env,now),listOffers(env)]);
   const decisions:GrowthDecision[]=[];let editorial:GrowthEvaluation['editorial']=null;let bestConversions=-1;
-  for(const hyp of hyps.filter(h=>h.status==='active')){
+  const activeHyps=hyps.filter(h=>h.status==='active');const organicOwners=new Map<string,string>();
+  // Search terms are not available per visit. One page cohort must not become multiple query cohorts.
+  for(const hyp of activeHyps)if(!organicOwners.has(hyp.targetPath))organicOwners.set(hyp.targetPath,hyp.id);
+  for(const hyp of activeHyps){
     const fresh=evidence.filter(e=>e.hypothesisId===hyp.id&&evidenceIsFresh(e,now));
     const active=camps.filter(c=>c.hypothesisId===hyp.id&&c.status==='active');
-    for(const campaign of active.length?active:[undefined]){
-      const row=report.campaignRows.find(r=>r.campaignId===campaign?.id);const m=metrics(row);
+    const organicRow=report.organicRows.find(row=>row.pagePath===hyp.targetPath);
+    const includeOrganic=organicOwners.get(hyp.targetPath)===hyp.id&&(!active.length||Boolean(organicRow?.visits));
+    for(const campaign of [...active,...(includeOrganic?[undefined]:[])]){
+      const row=campaign?report.campaignRows.find(r=>r.campaignId===campaign.id):organicRow;const m=metrics(row);
+      const cohort:GrowthCohort=campaign?{kind:'campaign',campaignId:campaign.id,source:campaign.source}:{kind:'organic_search_landing',targetPath:hyp.targetPath,source:'search'};
       const recentObservations=observations.filter(o=>o.campaignId===campaign?.id&&Date.parse(o.periodEnd+'T23:59:59Z')>=now.getTime()-30*DAY&&Date.parse(o.observedAt)<=now.getTime());
       const pageTool=hyp.targetPath.startsWith('/tools/')?hyp.targetPath.slice(7):null;
       const hasOffer=offers.some(offer=>isUsableOffer(offer,now.getTime())&&(pageTool?offer.id===pageTool:offer.category===hyp.category));
       const rec=recommendation(hyp,campaign,m,fresh,recentObservations.reduce((sum,o)=>sum+o.impressions,0),hasOffer);
-      const decisionId=`${now.toISOString().slice(0,10)}:${campaign?.id??hyp.id}:${rec.kind}`;
+      // Hypothesis IDs and campaign IDs are separate namespaces and may contain the same value.
+      const decisionId=`${now.toISOString().slice(0,10)}:${campaign?'campaign:'+campaign.id:'organic:'+hyp.id}:${rec.kind}`;
+      const legacyId=`${now.toISOString().slice(0,10)}:${campaign?.id??hyp.id}:${rec.kind}`;
+      const sameIdentity=(d:GrowthDecision)=>d.hypothesisId===hyp.id&&d.campaignId===(campaign?.id??'')&&d.kind===rec.kind
+        &&(!d.snapshot.cohort||(cohort.kind==='campaign'?d.snapshot.cohort.kind==='campaign'&&d.snapshot.cohort.campaignId===cohort.campaignId:d.snapshot.cohort.kind==='organic_search_landing'&&d.snapshot.cohort.targetPath===cohort.targetPath));
       const dismissedRow=await env.DB.prepare("SELECT payload_json FROM growth_decisions WHERE hypothesis_id=? AND campaign_id=? AND kind=? AND status='dismissed' ORDER BY updated_at DESC LIMIT 1").bind(hyp.id,campaign?.id??'',rec.kind).first<{payload_json:string}>();
       const dismissed=dismissedRow?JSON.parse(dismissedRow.payload_json) as GrowthDecision:undefined;
-      const prior=dismissed??existing.find(d=>d.id===decisionId)??existing.find(d=>d.hypothesisId===hyp.id&&d.campaignId===(campaign?.id??'')&&d.kind===rec.kind&&(d.status==='proposed'||d.status==='applied'));
-      const decision:GrowthDecision=prior??{id:decisionId,hypothesisId:hyp.id,campaignId:campaign?.id??'',...rec,baseline:m,snapshot:{window:report.window,thresholds:GROWTH_THRESHOLDS,evidenceIds:fresh.map(e=>e.id),evidenceStatus:fresh.some(actualDemand)?'recent_observation_not_proof':'insufficient'},status:'proposed',createdAt:now.toISOString(),updatedAt:now.toISOString(),note:''};
+      const prior=(dismissed&&sameIdentity(dismissed)?dismissed:undefined)??existing.find(d=>sameIdentity(d)&&(d.id===decisionId||d.id===legacyId))??existing.find(d=>sameIdentity(d)&&(d.status==='proposed'||d.status==='applied'));
+      const decision:GrowthDecision=prior??{id:decisionId,hypothesisId:hyp.id,campaignId:campaign?.id??'',...rec,baseline:m,snapshot:{window:report.window,thresholds:GROWTH_THRESHOLDS,evidenceIds:fresh.map(e=>e.id),evidenceStatus:fresh.some(actualDemand)?'recent_observation_not_proof':'insufficient',cohort},status:'proposed',createdAt:now.toISOString(),updatedAt:now.toISOString(),note:''};
       if(prior?.status==='proposed'){
-        Object.assign(decision,rec,{baseline:m,snapshot:{window:report.window,thresholds:GROWTH_THRESHOLDS,evidenceIds:fresh.map(e=>e.id),evidenceStatus:fresh.some(actualDemand)?'recent_observation_not_proof':'insufficient'},updatedAt:now.toISOString()});
+        Object.assign(decision,rec,{baseline:m,snapshot:{window:report.window,thresholds:GROWTH_THRESHOLDS,evidenceIds:fresh.map(e=>e.id),evidenceStatus:fresh.some(actualDemand)?'recent_observation_not_proof':'insufficient',cohort},updatedAt:now.toISOString()});
         await env.DB.prepare("UPDATE growth_decisions SET payload_json=?,updated_at=? WHERE id=? AND status='proposed'").bind(JSON.stringify(decision),decision.updatedAt,decision.id).run();
       }
       if(!prior)await env.DB.prepare('INSERT OR IGNORE INTO growth_decisions(id,hypothesis_id,campaign_id,kind,status,payload_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)').bind(decision.id,hyp.id,decision.campaignId,decision.kind,decision.status,JSON.stringify(decision),decision.createdAt,decision.updatedAt).run();
       decisions.push(decision);
-      if(rec.kind==='expand_test'&&decision.status!=='dismissed'&&campaign&&m.convertedClicks>bestConversions){bestConversions=m.convertedClicks;editorial={hypothesisId:hyp.id,category:hyp.category,campaignId:campaign.id,reason:rec.reason,topic:`${hyp.audience}が「${hyp.pain}」を解決するために、${hyp.query}を比較する判断基準`};}
+      if(rec.kind==='expand_test'&&decision.status!=='dismissed'&&m.convertedClicks>bestConversions){bestConversions=m.convertedClicks;editorial={hypothesisId:hyp.id,category:hyp.category,campaignId:campaign?.id??'',reason:rec.reason,topic:`${hyp.audience}が「${hyp.pain}」を解決するために、${hyp.query}を比較する判断基準`};}
     }
   }
   return{decisions,editorial};
@@ -155,12 +173,12 @@ async function updateDecision(env:Env,input:Record<string,unknown>,now:Date){
   if(d.status===status){if(d.note!==note)throw new GrowthError('idempotency_conflict',409);return{decision:d};}
   if(status==='dismissed'&&d.status!=='proposed'||status==='applied'&&d.status!=='proposed'||status==='evaluated'&&d.status!=='applied')throw new GrowthError('Invalid decision transition',409);
   if(status==='applied'){
-    const report=await analyticsReport(env,now);d.baseline=metrics(report.campaignRows.find(r=>r.campaignId===d.campaignId));d.snapshot.window=report.window;d.appliedAt=now.toISOString();
+    const report=await analyticsReport(env,now);d.baseline=decisionMetrics(report,d);d.snapshot.window=report.window;d.appliedAt=now.toISOString();
   }
   if(status==='evaluated'){
     if(!d.appliedAt||now.getTime()-Date.parse(d.appliedAt)<GROWTH_THRESHOLDS.observationDays*DAY)throw new GrowthError('Observe at least 7 days after applying a change',409);
-    if(now.getTime()-Date.parse(d.appliedAt)>90*DAY)throw new GrowthError('observation_window_expired',409,'実施から90日を超え、詳細計測の保存期間外です。新しいキャンペーンで検証を始めてください。');
-    const report=await analyticsReport(env,now,new Date(d.appliedAt));const after=metrics(report.campaignRows.find(r=>r.campaignId===d.campaignId));
+    if(now.getTime()-Date.parse(d.appliedAt)>90*DAY)throw new GrowthError('observation_window_expired',409,'実施から90日を超え、詳細計測の保存期間外です。既存の仮説を保留して新しい仮説、または新しいキャンペーンで検証を始めてください。');
+    const report=await analyticsReport(env,now,new Date(d.appliedAt));const after=decisionMetrics(report,d);
     const rate=(m:GrowthMetrics)=>d.metric==='click_rate'?(m.visits>=100?m.clicks/m.visits:null):d.metric==='conversion_rate'?(m.matureAttributableClicks>=30&&m.matureAttributableVisits>=20?m.convertedClicks/m.matureAttributableClicks:null):null;
     const beforeRate=rate(d.baseline),afterRate=rate(after);let state:NonNullable<GrowthDecision['outcome']>['status']=beforeRate===null||afterRate===null?'insufficient_data':afterRate>beforeRate?'improved':afterRate<beforeRate?'declined':'unchanged';
     if(d.metric==='visits'&&after.visits>=100||d.metric==='attribution'&&after.attributableClicks>0||d.metric==='eligible_clicks'&&after.clicks>0)state='criterion_met';

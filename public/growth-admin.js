@@ -27,7 +27,7 @@ function options(selectId, items, selected) {
   if (items.some(item => item[0] === current)) select.value = current;
 }
 function table(headers, rows, label) {
-  if (!rows.length) return node('p', 'まだ観測データがありません。公開した計測リンクからの流入や、サイト内の行動が記録されると表示します。', 'micro');
+  if (!rows.length) return node('p', 'まだ観測データがありません。検索経由の訪問や、公開した計測リンクからの流入、サイト内の行動が記録されると表示します。', 'micro');
   const wrap = node('div', undefined, 'growth-table-wrap'); wrap.tabIndex = 0; wrap.setAttribute('role', 'region'); wrap.setAttribute('aria-label', label);
   const t = node('table', undefined, 'growth-table'); const head = node('thead'); const hr = node('tr');
   for (const title of headers) { const th = node('th', title); th.scope = 'col'; hr.append(th); } head.append(hr); t.append(head);
@@ -108,7 +108,7 @@ export function initGrowthAdmin({ api, refresh, message }) {
       if (url.startsWith('/')) row.append(node('p', '公開 URL が未設定のため相対リンクを表示しています。公開後はサイトの URL と合わせて使用してください。', 'micro'));
       target.append(row);
     }
-    if (!data.length) target.append(node('p', '計測リンクはまだありません。仮説ごとに投稿や施策を分けると、どこから流入したかを比較できます。', 'micro'));
+    if (!data.length) target.append(node('p', '検索の自然流入は通常のURLと仮説の対象ページで評価できるため、計測リンクは不要です。メールや外部掲載などを別途比較したい場合だけ作成します。', 'micro'));
   }
   function renderObservations(data) {
     const target = $('growth-observations'); target.replaceChildren();
@@ -126,9 +126,14 @@ export function initGrowthAdmin({ api, refresh, message }) {
       const card = node('div', undefined, 'metric'); card.append(node('span', label), node('b', number(v))); metrics.append(card);
     }
     const campaignName = id => campaigns.find(c => c.id === id)?.name || id || '施策指定なし';
-    $('growth-analytics').replaceChildren(table(['ページ / 掲載元', '訪問', '診断', 'クリック', '照合対象クリック', 'クリック率', '7日経過の照合対象', '成約したクリック', '成約率', '確定報酬（円）'], data.rows.map(row => [row.pagePath + '\n' + (sourceNames[row.source] || row.source) + ' / ' + campaignName(row.campaignId), number(row.visits), number(row.diagnoses), number(row.clicks), number(row.attributableClicks), percent(row.ctr), number(row.matureAttributableClicks), number(row.convertedClicks), percent(row.conversionRate), number(row.confirmedRevenueJpy)]), 'ページ別の流入と成約'));
+    $('growth-analytics').replaceChildren(table(['ページ / 掲載元', '訪問', '診断', '広告クリック', '照合対象クリック', '広告クリック／閲覧', '7日経過の照合対象', '成約したクリック', '成約率', '確定報酬（円）'], data.rows.map(row => [row.pagePath + '\n' + (sourceNames[row.source] || row.source) + ' / ' + campaignName(row.campaignId), number(row.visits), number(row.diagnoses), number(row.clicks), number(row.attributableClicks), percent(row.ctr), number(row.matureAttributableClicks), number(row.convertedClicks), percent(row.conversionRate), number(row.confirmedRevenueJpy)]), 'ページ別の流入と成約'));
     const rows = data.campaignRows || [];
-    $('growth-campaign-analytics').replaceChildren(table(['掲載元 / 施策', '訪問', '診断', 'クリック', '7日経過の照合対象', '成約したクリック', '成約率'], rows.map(row => [(sourceNames[row.source] || row.source) + ' / ' + campaignName(row.campaignId), number(row.visits), number(row.diagnoses), number(row.clicks), number(row.matureAttributableClicks), number(row.convertedClicks), percent(row.conversionRate)]), '流入元と施策別の結果'));
+    $('growth-campaign-analytics').replaceChildren(
+      node('h4', '検索の入口ページ別'),
+      node('p', '計測リンク指定のない検索訪問を、最初に開いたページでまとめています。その訪問内の回遊・広告クリックを含みます。Google以外の検索も含み、Search Consoleの検索語・クリックとは直接結び付けません。以下の表は同じデータを違う切り口で示すため、合計しないでください。', 'micro'),
+      table(['検索の入口', '訪問', '診断', '広告クリック', '広告クリック／訪問', '7日経過の照合対象', '成約したクリック', '成約率', '確定報酬（円）'], (data.organicRows || []).map(row => [row.pagePath, number(row.visits), number(row.diagnoses), number(row.clicks), percent(row.visits > 0 ? row.clicks / row.visits : null), number(row.matureAttributableClicks), number(row.convertedClicks), percent(row.conversionRate), number(row.confirmedRevenueJpy)]), '検索入口別の訪問と成約'),
+      node('h4', '流入元・施策別'),
+      table(['掲載元 / 施策', '訪問', '診断', 'クリック', '7日経過の照合対象', '成約したクリック', '成約率'], rows.map(row => [(sourceNames[row.source] || row.source) + ' / ' + campaignName(row.campaignId), number(row.visits), number(row.diagnoses), number(row.clicks), number(row.matureAttributableClicks), number(row.convertedClicks), percent(row.conversionRate)]), '流入元と施策別の結果'));
     const target = $('growth-conversions'); target.replaceChildren();
     for (const conversion of data.recentConversions || []) {
       const row = node('article', undefined, 'growth-record');
@@ -149,6 +154,7 @@ export function initGrowthAdmin({ api, refresh, message }) {
       row.append(node('h3', `${d.title} · ${stateNames[d.status] || d.status}`), node('p', d.reason), detail('次の行動', d.action), detail('対象', hypotheses.find(h => h.id === d.hypothesisId)?.query || d.hypothesisId || 'サイト全体'), detail('作成', time(d.createdAt)));
       const evidence = node('details', undefined, 'growth-inner'); evidence.append(node('summary', '判断に使った観測値'));
       const metrics = d.baseline || {};
+      if (d.snapshot?.cohort?.kind === 'organic_search_landing') evidence.append(detail('比較する訪問', `検索経由・計測リンク指定なし・入口 ${d.snapshot.cohort.targetPath}。このページへの訪問全体で、個別の検索語への成約紐付けではありません。`));
       evidence.append(detail('訪問 / 広告クリック', `${number(metrics.visits)} / ${number(metrics.clicks)}`), detail('照合できるクリック / うち7日経過', `${number(metrics.attributableClicks)} / ${number(metrics.matureAttributableClicks)}`), detail('成約したクリック / 確定報酬', `${number(metrics.convertedClicks)} / ${number(metrics.confirmedRevenueJpy)}円`), detail('最近の需要記録', d.snapshot?.evidenceStatus === 'recent_observation_not_proof' ? '観測記録あり（需要や成約を保証しません）' : '判断材料が不足しています'));
       evidence.append(detail('7日経過した照合対象の訪問 / 成約のある訪問', `${number(metrics.matureAttributableVisits)} / ${number(metrics.convertedVisits)}`));
       if (d.snapshot?.evidenceIds?.length) evidence.append(detail('参照した根拠', `${number(d.snapshot.evidenceIds.length)}件`));

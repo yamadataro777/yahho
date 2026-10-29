@@ -38,6 +38,12 @@ describe('deployment boundaries', () => {
   it('fails closed if autopublishing lacks the AI binding', () => {
     expect(preflight({ ...env, ENABLE_AUTOPUBLISH: 'true' }, []).errors).toHaveLength(1);
   });
+  it('keeps social drafts off unless this deployment explicitly enables them', () => {
+    const base = { vars: { ENABLE_SOCIAL_DRAFTS: 'true' }, d1_databases: [{ binding: 'DB' }] };
+    expect(productionConfig(base, env, env.D1_DATABASE_ID).vars.ENABLE_SOCIAL_DRAFTS).toBe('false');
+    expect(productionConfig(base, { ...env, ENABLE_SOCIAL_DRAFTS: 'true' }, env.D1_DATABASE_ID).vars.ENABLE_SOCIAL_DRAFTS).toBe('true');
+    expect(productionConfig(base, { ...env, ENABLE_SOCIAL_DRAFTS: 'false' }, env.D1_DATABASE_ID).vars.ENABLE_SOCIAL_DRAFTS).toBe('false');
+  });
   it('requires the real public operator and a reachable-formatted contact before deploying', () => {
     expect(preflight({ ...env, OPERATOR_NAME: '' }, []).errors).toHaveLength(1);
     expect(preflight({ ...env, CONTACT_EMAIL: undefined }, []).errors).toHaveLength(1);

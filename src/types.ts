@@ -25,6 +25,7 @@ export interface Env {
   PUBLIC_CONTACT_URL?: string;
   GOOGLE_SITE_VERIFICATION?: string;
   ENABLE_AUTOPUBLISH?: string;
+  ENABLE_SOCIAL_DRAFTS?: string;
   MAX_DAILY_ARTICLES?: string;
 }
 export interface TrackingEvent {

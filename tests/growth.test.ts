@@ -17,7 +17,7 @@ const hypothesis={id:'design-solo',category:'design',audience:'ひとり事業�
 const campaign={id:'threads-design-01',name:'資料作りの悩み',source:'threads',hypothesisId:hypothesis.id,targetPath:hypothesis.targetPath};
 const evidence={id:'customer-design-01',hypothesisId:hypothesis.id,kind:'customer_quote',sourceUrl:'https://community.shigoto.workers.dev/research/1',observedAt:'2026-10-20T09:00:00.000Z',summary:'テスト用の記録。資料の見た目が担当者ごとに揃わず、選定条件を知りたいという悩み。'};
 async function prepare(withEvidence=true,withOffer=true){expect((await api('/hypotheses',hypothesis)).status).toBe(201);expect((await api('/campaigns',campaign)).status).toBe(201);if(withEvidence)expect((await api('/evidence',evidence)).status).toBe(201);if(withOffer){const offer={id:'canva',name:'Canva test',category:'design',description:'Test only',url:'https://partner.shigoto.workers.dev/canva',allowedHosts:['partner.shigoto.workers.dev'],verifiedAt:'2026-01-01T00:00:00.000Z',expiresAt:null,enabled:true,clickTracking:{parameter:'subid',approved:true}};sql.prepare('INSERT INTO offers VALUES(?,?,?,?,?)').run(offer.id,offer.category,1,JSON.stringify(offer),NOW.toISOString());}}
-function population(visits:number,clicks:number,options:{date?:string;tracked?:boolean;oneVisit?:boolean}={}){const date=options.date??'2026-10-14T10:00:00.000Z';const visitIds=Array.from({length:visits},()=>crypto.randomUUID());for(const v of visitIds){sql.prepare('INSERT INTO growth_visits VALUES(?,?,?,?,?,?)').run(v,date,new Date(Date.parse(date)+1_800_000).toISOString(),'threads',campaign.id,campaign.targetPath);sql.prepare('INSERT INTO growth_events VALUES(?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),v,'page_view',campaign.targetPath,'design','',0,date);}const ids:string[]=[];for(let i=0;i<clicks;i++){const id=crypto.randomUUID();ids.push(id);sql.prepare('INSERT INTO growth_events VALUES(?,?,?,?,?,?,?,?)').run(id,visitIds[options.oneVisit?0:i%visits],'affiliate_click',campaign.targetPath,'design','canva',Number(options.tracked!==false),date);}return ids;}
+function population(visits:number,clicks:number,options:{date?:string;tracked?:boolean;oneVisit?:boolean;source?:string;campaignId?:string;landingPath?:string;clickPath?:string}={}){const date=options.date??'2026-10-14T10:00:00.000Z';const visitIds=Array.from({length:visits},()=>crypto.randomUUID());for(const v of visitIds){sql.prepare('INSERT INTO growth_visits VALUES(?,?,?,?,?,?)').run(v,date,new Date(Date.parse(date)+1_800_000).toISOString(),options.source??'threads',options.campaignId??campaign.id,options.landingPath??campaign.targetPath);sql.prepare('INSERT INTO growth_events VALUES(?,?,?,?,?,?,?,?)').run(crypto.randomUUID(),v,'page_view',options.landingPath??campaign.targetPath,'design','',0,date);}const ids:string[]=[];for(let i=0;i<clicks;i++){const id=crypto.randomUUID();ids.push(id);sql.prepare('INSERT INTO growth_events VALUES(?,?,?,?,?,?,?,?)').run(id,visitIds[options.oneVisit?0:i%visits],'affiliate_click',options.clickPath??campaign.targetPath,'design','canva',Number(options.tracked!==false),date);}return ids;}
 async function conversion(clickId:string,i:number,status='confirmed'){const request=new Request('https://shigoto.workers.dev/api/admin/conversions',{method:'POST',headers:{authorization:'Bearer '+token,'content-type':'application/json'},body:JSON.stringify({externalId:'asp-'+i,offerId:'canva',commissionJpy:500,occurredAt:'2026-10-18T10:00:00.000Z',clickId})});expect((await handleAdmin(request,env))?.status).toBe(201);if(status==='reversed')sql.prepare("UPDATE conversions SET status='reversed' WHERE external_id=?").run('asp-'+i);}
 
 it('authenticates, validates public destinations, and keeps campaign identity immutable',async()=>{
@@ -125,4 +125,78 @@ it('returns a clear expired-window result beyond retention instead of a storage 
   vi.setSystemTime(new Date(NOW.getTime()+90*86400000+1));
   const expired=await api('/decisions',{id:decision.id,status:'evaluated',note:'保存期間後に評価した'},'PATCH');
   expect(expired.status).toBe(409);expect(expired.data.error).toBe('observation_window_expired');expect(expired.data.message).toContain('新しいキャンペーン');
+});
+
+
+it('evaluates ordinary search landings without campaign links and preserves the same entry cohort after changes',async()=>{
+  await prepare();await api('/campaigns',{id:campaign.id,status:'paused'},'PATCH');
+  const organic={source:'search',campaignId:'',clickPath:'/tools/canva'};
+  population(110,0,organic);
+  // Other entry pages and direct traffic are not members of this hypothesis population.
+  population(90,40,{...organic,landingPath:'/tools/canva'});
+  population(90,40,{source:'direct',campaignId:''});
+  const decision=(await evaluateGrowth(env,NOW)).decisions[0];
+  expect(decision.kind).toBe('test_cta');expect(decision.campaignId).toBe('');
+  expect(decision.baseline).toMatchObject({visits:110,clicks:0});
+  expect(decision.snapshot.cohort).toEqual({kind:'organic_search_landing',source:'search',targetPath:hypothesis.targetPath});
+  expect((await api('/decisions',{id:decision.id,status:'applied',note:'検索意図に合わせて比較への案内を修正した'},'PATCH')).status).toBe(200);
+  vi.setSystemTime(new Date('2026-11-06T12:00:00Z'));
+  population(100,12,{...organic,date:'2026-10-29T10:00:00.000Z',tracked:false});
+  population(300,60,{source:'direct',campaignId:'',date:'2026-10-29T10:00:00.000Z'});
+  const updated=await api('/decisions',{id:decision.id,status:'evaluated',note:'検索入口が同じ訪問の変更後の結果を確認した'},'PATCH');
+  expect(updated.status).toBe(200);expect(updated.data.decision.outcome).toMatchObject({status:'improved',beforeRate:0,afterRate:0.12,after:{visits:100,clicks:12}});
+});
+it('keeps organic and explicitly tagged search cohorts disjoint and does not assign page traffic to several query hypotheses',async()=>{
+  await prepare();sql.prepare("UPDATE growth_campaigns SET source='search' WHERE id=?").run(campaign.id);
+  population(120,35,{source:'search'});
+  population(110,0,{source:'search',campaignId:''});
+  expect((await api('/hypotheses',{...hypothesis,id:'second-query',query:'Canva Adobe 違い'})).status).toBe(201);
+  const result=await evaluateGrowth(env,NOW);
+  expect(result.decisions).toHaveLength(2);
+  expect(result.decisions.find(d=>d.campaignId===campaign.id)?.baseline).toMatchObject({visits:120,clicks:35});
+  const organic=result.decisions.filter(d=>d.snapshot.cohort?.kind==='organic_search_landing');
+  expect(organic).toHaveLength(1);expect(organic[0].baseline).toMatchObject({visits:110,clicks:0});
+  expect(result.decisions.some(d=>d.hypothesisId==='second-query')).toBe(false);
+});
+it('uses search guidance without prescribing SNS and can prioritize mature organic conversions',async()=>{
+  await prepare();await api('/campaigns',{id:campaign.id,status:'paused'},'PATCH');
+  const initial=(await evaluateGrowth(env,NOW)).decisions[0];
+  expect(initial.kind).toBe('collect_traffic');expect(initial.action).toContain('Search Console');expect(initial.action).toContain('SNS投稿や計測パラメータは不要');
+  const clicks=population(120,35,{source:'search',campaignId:'',clickPath:'/tools/canva'});
+  for(let i=0;i<3;i++)await conversion(clicks[i],i);
+  const result=await evaluateGrowth(env,NOW);expect(result.decisions[0].kind).toBe('expand_test');
+  expect(result.editorial).toMatchObject({hypothesisId:hypothesis.id,campaignId:'',category:'design'});
+  expect(result.decisions[0].action).toContain('検索意図');expect(result.decisions[0].action).not.toContain('投稿');
+  sql.prepare("UPDATE conversions SET status='reversed' WHERE external_id='asp-2'").run();
+  expect((await evaluateGrowth(env,NOW)).editorial).toBeNull();
+});
+
+it('namespaces equal campaign and hypothesis IDs and preserves cohort identity across legacy refresh and apply',async()=>{
+  await prepare();
+  sql.prepare("UPDATE growth_campaigns SET id=?,source='search' WHERE id=?").run(hypothesis.id,campaign.id);
+  population(120,0,{source:'search',campaignId:hypothesis.id});
+  population(110,0,{source:'search',campaignId:''});
+  const first=(await evaluateGrowth(env,NOW)).decisions;
+  expect(first).toHaveLength(2);expect(new Set(first.map(d=>d.id)).size).toBe(2);
+  expect(sql.prepare('SELECT COUNT(*) AS n FROM growth_decisions').get()?.n).toBe(2);
+  const tagged=first.find(d=>d.campaignId===hypothesis.id)!;
+  const organic=first.find(d=>d.campaignId==='')!;
+  expect(tagged).toMatchObject({kind:'test_cta',baseline:{visits:120},snapshot:{cohort:{kind:'campaign',campaignId:hypothesis.id}}});
+  expect(organic).toMatchObject({kind:'test_cta',baseline:{visits:110},snapshot:{cohort:{kind:'organic_search_landing',targetPath:hypothesis.targetPath}}});
+  expect(tagged.id).toContain(':campaign:');expect(organic.id).toContain(':organic:');
+  // A prior deployment may already have a campaign record with the old, unnamespaced ID.
+  const legacyId=`${NOW.toISOString().slice(0,10)}:${hypothesis.id}:test_cta`;
+  sql.prepare('UPDATE growth_decisions SET id=?,payload_json=? WHERE id=?').run(legacyId,JSON.stringify({...tagged,id:legacyId}),tagged.id);
+  population(5,0,{source:'search',campaignId:''});
+  const refreshed=(await evaluateGrowth(env,NOW)).decisions;
+  expect(refreshed.find(d=>d.campaignId===hypothesis.id)).toMatchObject({id:legacyId,baseline:{visits:120},snapshot:{cohort:{kind:'campaign'}}});
+  expect(refreshed.find(d=>d.campaignId==='')).toMatchObject({id:organic.id,baseline:{visits:115},snapshot:{cohort:{kind:'organic_search_landing'}}});
+  expect(sql.prepare('SELECT COUNT(*) AS n FROM growth_decisions').get()?.n).toBe(2);
+  const appliedTagged=await api('/decisions',{id:legacyId,status:'applied',note:'計測リンク経由の説明を修正した'},'PATCH');
+  const appliedOrganic=await api('/decisions',{id:organic.id,status:'applied',note:'自然検索の入口ページを修正した'},'PATCH');
+  expect(appliedTagged.status).toBe(200);expect(appliedOrganic.status).toBe(200);
+  expect(appliedTagged.data.decision.baseline.visits).toBe(120);expect(appliedOrganic.data.decision.baseline.visits).toBe(115);
+  const final=(await evaluateGrowth(env,NOW)).decisions;
+  expect(final.find(d=>d.id===legacyId)).toMatchObject({status:'applied',baseline:{visits:120},snapshot:{cohort:{kind:'campaign'}}});
+  expect(final.find(d=>d.id===organic.id)).toMatchObject({status:'applied',baseline:{visits:115},snapshot:{cohort:{kind:'organic_search_landing'}}});
 });

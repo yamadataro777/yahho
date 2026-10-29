@@ -100,6 +100,18 @@ describe('daily automation orchestration', () => {
     expect(result.generation.reasons).toContain('workers_ai_not_configured');
     expect(db.insertedArticles).toHaveLength(0);
     expect(db.retentionCutoffs).toEqual(['2025-09-23']);
+    expect(result.socialDrafts).toEqual([]);
+  });
+  it('creates an editorial social draft only after explicit opt-in, without social requests', async () => {
+    for (const flag of [undefined, 'false', 'TRUE', '1', 'true']) {
+      const fetcher = sourceFetcher();
+      const result = await runAutomation(environment(new MemoryDb(), { ENABLE_SOCIAL_DRAFTS: flag, MAX_DAILY_ARTICLES: '0' }), { now, fetcher });
+      expect(result.socialDrafts).toHaveLength(flag === 'true' ? 1 : 0);
+      if (flag === 'true') expect(result.socialDrafts[0]).toMatchObject({ articleSlug: 'choose-tools', link: '/guides/choose-tools' });
+      expect(result.checks).toHaveLength(2);
+      expect(fetcher).toHaveBeenCalledTimes(4); // two robots files and two source pages only
+      expect(result.generation.status).toBe('skipped');
+    }
   });
   it('uses sufficiently observed reader needs to choose sources, without using revenue', async () => {
     const db = new MemoryDb();
