@@ -1,3 +1,4 @@
+import { initGrowthAdmin } from './growth-admin.js';
 const $ = id => document.getElementById(id);
 let adminToken = '';
 let offers = [];
@@ -6,6 +7,7 @@ let session = 0;
 const pendingRequests = new Set();
 const number = value => new Intl.NumberFormat('ja-JP').format(Number(value) || 0);
 const time = value => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('ja-JP') : '未確認';
+const growthAdmin = initGrowthAdmin({ api, refresh: () => refresh(), message });
 const statusNames = { completed: '完了', partial: '一部保留', failed: '失敗', running: '実行中', duplicate: '本日の処理は実行済み' };
 
 function message(id, value, error = false) {
@@ -94,16 +96,18 @@ function renderStatus(data) {
 
 async function refresh() {
   const currentSession = session;
-  const [data, articleData] = await Promise.all([api('/api/admin/status'), api('/api/admin/articles')]);
+  const [data, articleData, growthData, analyticsData] = await Promise.all([api('/api/admin/status'), api('/api/admin/articles'), api('/api/admin/growth'), api('/api/admin/analytics')]);
   if (!adminToken || session !== currentSession) throw new Error('接続が終了しました。再度ログインしてください。');
   renderStatus(data);
   renderArticles(articleData.articles, articleData.sources);
+  growthAdmin.render(growthData, analyticsData);
   $('admin-login').hidden = true; $('admin-private').hidden = false;
 }
 
 function logout() {
   session++;
   adminToken = ''; offers = [];
+  growthAdmin.clear();
   for (const controller of pendingRequests) controller.abort();
   $('admin-private').hidden = true; $('admin-login').hidden = false;
   $('admin-login').reset(); $('offer-form').reset(); $('conversion-form').reset();
@@ -153,11 +157,16 @@ function fillOffer() {
   $('offer-hosts').value = offer?.allowedHosts.join(', ') || '';
   $('offer-expires').value = localDate(offer?.expiresAt);
   $('offer-enabled').checked = offer?.enabled || false;
+  $('offer-click-approved').checked = offer?.clickTracking?.approved === true;
+  $('offer-click-parameter').value = offer?.clickTracking?.parameter || '';
+  $('offer-click-parameter').required = $('offer-click-approved').checked;
   $('offer-verified').checked = false;
   $('offer-verification').textContent = offer?.verifiedAt ? `登録済みの確認日時：${time(offer.verifiedAt)}。URL・ホストを変更した場合は再確認してください。` : '有効化には確認が必要です。URL を変更した場合は再確認してください。';
   message('offer-message', '');
 }
 $('offer-id').addEventListener('change', fillOffer);
+$('offer-click-approved').addEventListener('change', () => { $('offer-click-parameter').required = $('offer-click-approved').checked; });
+$('offer-url').addEventListener('input', () => { $('offer-click-approved').checked = false; $('offer-click-parameter').required = false; });
 $('offer-form').addEventListener('submit', async event => {
   event.preventDefault();
   const id = $('offer-id').value;
@@ -174,7 +183,7 @@ $('offer-form').addEventListener('submit', async event => {
     expiresAt = date.toISOString();
   }
   try {
-    await api('/api/admin/offers', 'PUT', { id, name: $('offer-name').value.trim(), category: $('offer-category').value, description: $('offer-description').value.trim(), url, allowedHosts, enabled: $('offer-enabled').checked, verifiedAt, expiresAt });
+    await api('/api/admin/offers', 'PUT', { id, name: $('offer-name').value.trim(), category: $('offer-category').value, description: $('offer-description').value.trim(), url, allowedHosts, enabled: $('offer-enabled').checked, verifiedAt, expiresAt, ...($('offer-click-approved').checked ? { clickTracking: { parameter: $('offer-click-parameter').value.trim(), approved: true } } : {}) });
     await refresh(); fillOffer(); message('offer-message', '広告設定を保存しました。');
   } catch (error) { message('offer-message', error.message, true); }
 });
@@ -184,7 +193,7 @@ $('conversion-form').addEventListener('submit', async event => {
   const date = new Date($('conversion-date').value);
   if (!Number.isFinite(date.getTime())) { message('conversion-message', '成果発生日時を確認してください。', true); return; }
   try {
-    const result = await api('/api/admin/conversions', 'POST', { externalId: $('conversion-id').value.trim(), offerId: $('conversion-offer').value, commissionJpy: Number($('conversion-commission').value), occurredAt: date.toISOString() });
+    const result = await api('/api/admin/conversions', 'POST', { externalId: $('conversion-id').value.trim(), offerId: $('conversion-offer').value, commissionJpy: Number($('conversion-commission').value), occurredAt: date.toISOString(), ...($('conversion-click-id').value.trim() ? { clickId: $('conversion-click-id').value.trim() } : {}) });
     $('conversion-form').reset(); await refresh();
     message('conversion-message', result.created ? '確定成果を登録しました。' : 'この成果は登録済みです。二重計上していません。');
   } catch (error) { message('conversion-message', error.message, true); }

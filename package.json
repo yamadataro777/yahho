@@ -13,7 +13,8 @@
     "deploy": "node scripts/deploy.mjs",
     "check": "npm run typecheck && npm test && npm run build",
     "research": "node scripts/research.mjs",
-    "social-card": "node scripts/social-card.mjs"
+    "social-card": "node scripts/social-card.mjs",
+    "import:growth": "node scripts/import-growth.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261028.1",

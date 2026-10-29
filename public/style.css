@@ -157,7 +157,7 @@ footer{background:#f0f3e9;border-top:1px solid #e5e9dc;padding:45px max(24px,cal
 .search-form{max-width:600px;margin-bottom:30px}
 .search-form>label{font-size:14px;font-weight:600;display:block;margin-bottom:9px}
 .search-form>div{display:flex;gap:12px}
-input[type=search],input[type=text],input[type=url],input[type=password],input[type=number],input[type=datetime-local],select,textarea{width:100%;border:1px solid #829177;border-radius:7px;padding:13px 15px;color:var(--ink);background:white;min-width:0;font-size:16px}
+input:not([type]),input[type=search],input[type=text],input[type=url],input[type=password],input[type=number],input[type=datetime-local],select,textarea{width:100%;border:1px solid #829177;border-radius:7px;padding:13px 15px;color:var(--ink);background:white;min-width:0;font-size:16px}
 .filter-pills{display:flex;gap:10px;flex-wrap:wrap;margin:25px 0}
 .filter-pills a{font-size:14px;border:1px solid var(--line);padding:9px 17px;border-radius:30px;min-height:44px;display:inline-flex;align-items:center}
 .filter-pills .active{background:var(--ink);color:white}
@@ -405,3 +405,38 @@ input[type=search],input[type=text],input[type=url],input[type=password],input[t
 }
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;transition:none!important}
 }
+
+/* Evidence and improvement workspace */
+.growth-panel{min-width:0}
+.growth-section{border-top:1px solid var(--line);padding:20px 0;margin-top:12px}
+.growth-section>summary{font-size:18px;font-weight:700;cursor:pointer;min-height:44px;display:list-item;padding:8px 0}
+.growth-form{margin:18px 0 24px;padding:20px;background:var(--paper);border-radius:12px}
+.growth-form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 20px}
+.growth-form-grid>div{min-width:0}
+.growth-fieldset{padding:16px;border:1px solid var(--line);border-radius:10px;margin:18px 0;min-width:0}
+.growth-fieldset legend{font-size:14px;font-weight:700;padding:0 6px}
+.growth-fieldset[hidden]{display:none}
+.growth-records{display:grid;gap:14px}
+.growth-record{padding:18px;border:1px solid var(--line);border-radius:10px;min-width:0;overflow-wrap:anywhere}
+.growth-record h3{font-size:17px;margin:0 0 12px}
+.growth-record>.button,.growth-record>.text-button{margin:8px 12px 0 0}
+.growth-record pre{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font-size:13px}
+.growth-record input[readonly]{background:#fff}
+.growth-inner{margin-top:18px}
+.growth-inner>summary{cursor:pointer;font-weight:600;min-height:44px;padding:10px 0}
+.growth-table-wrap{max-width:100%;overflow:auto;border:1px solid var(--line);border-radius:10px;margin:18px 0}
+.growth-table{border-collapse:collapse;min-width:950px;width:100%;font-size:14px}
+.growth-table th,.growth-table td{text-align:left;padding:12px;border-bottom:1px solid var(--line);vertical-align:top;white-space:pre-line}
+.growth-table th{background:var(--paper);font-size:13px;min-width:90px}
+.growth-table td:first-child{min-width:240px;max-width:320px;overflow-wrap:anywhere}
+.growth-decision-form,.growth-reversal{margin-top:18px;padding-top:12px;border-top:1px solid var(--line)}
+@media(max-width:700px){.growth-form-grid{grid-template-columns:minmax(0,1fr)}.growth-form{padding:14px}.growth-section>summary{font-size:16px}.growth-record{padding:14px}.growth-panel .section-heading{display:block}.growth-panel .section-heading button{margin-top:12px}}
+.admin-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.admin-grid>*,.admin-panel{min-width:0}
+.admin-panel{overflow-wrap:anywhere}
+.growth-fieldset legend{max-width:100%;overflow-wrap:anywhere}
+.growth-panel input[type=date]{width:100%;min-width:0;max-width:100%;border:1px solid #829177;border-radius:7px;padding:13px 15px;color:var(--ink);background:white;font-size:16px}
+@media(max-width:700px){.admin-grid{grid-template-columns:minmax(0,1fr)}.growth-panel .metric-grid{grid-template-columns:minmax(0,1fr)}.growth-fieldset{padding:12px}.growth-fieldset legend{font-size:13px}}
+.admin-shell .metric-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+.admin-shell .metric{min-width:0;overflow-wrap:anywhere}
+@media(max-width:700px){.admin-shell .metric-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.admin-shell .metric{padding:14px}.admin-shell .growth-panel .metric-grid{grid-template-columns:minmax(0,1fr)}}

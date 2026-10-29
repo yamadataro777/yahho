@@ -10,6 +10,8 @@ import { escapeHtml as e } from './html';
 import { COMPARISONS } from './comparisons';
 import { siteOrigin, sitemap, breadcrumbSchema } from './seo';
 import { operatorProfile } from './site-config';
+import { handleAnalytics } from './analytics';
+import { handleGrowth } from './growth';
 
 const json = (data: unknown, status=200) => new Response(JSON.stringify(data), {status,headers:{'content-type':'application/json; charset=utf-8','cache-control':'no-store'}});
 async function readJson(request: Request): Promise<unknown> {
@@ -42,12 +44,14 @@ async function route(request: Request,env: Env,ctx: ExecutionContext):Promise<Re
   ctx.waitUntil(runAutomation(env).catch(()=>console.error('automation_run_failed')));
   return json({ok:true,message:'実行を受け付けました。同日の実行済みジョブは重複処理しません。しばらくして状態を更新してください。'},202);
  }
+ const growth=await handleGrowth(request,env);if(growth)return growth;
+ const analytics=await handleAnalytics(request,env);if(analytics)return analytics;
  const admin=await handleAdmin(request,env);if(admin)return admin;
  if(path==='/api/recommend'){
   if(request.method!=='POST')return json({error:'method_not_allowed'},405);
   let input;try{input=parseRecommendationInput(await readJson(request));}catch{return json({error:'用途・予算・使う人数を正しく選んでください。'},400);}
   const recommendations=recommendTools(input);
-  if(!/bot|crawler|spider|preview/i.test(request.headers.get('user-agent')??''))await recordEvent(env,{kind:'diagnosis',variant:input.useCase});
+  if(request.headers.get('dnt')!=='1'&&request.headers.get('sec-gpc')!=='1'&&request.headers.get('x-analytics-opt-out')!=='1'&&!/bot|crawler|spider|preview/i.test(request.headers.get('user-agent')??''))await recordEvent(env,{kind:'diagnosis',variant:input.useCase});
   return json({recommendations});
  }
  if(path==='/api/events'){
@@ -58,14 +62,14 @@ async function route(request: Request,env: Env,ctx: ExecutionContext):Promise<Re
    const offer=(await listOffers(env)).find(o=>o.id===body.offerId&&isUsableOffer(o));
    if(!offer)return json({error:'offer_not_active'},400);
    if(body.articleSlug!==undefined&&(typeof body.articleSlug!=='string'||!(await getArticle(env,body.articleSlug))))return json({error:'invalid_article'},400);
-   if(!/bot|crawler|spider|preview/i.test(request.headers.get('user-agent')??''))await recordEvent(env,{kind:'affiliate_click',offerId:offer.id,articleSlug:body.articleSlug as string|undefined});
+   if(request.headers.get('dnt')!=='1'&&request.headers.get('sec-gpc')!=='1'&&request.headers.get('x-analytics-opt-out')!=='1'&&!/bot|crawler|spider|preview/i.test(request.headers.get('user-agent')??''))await recordEvent(env,{kind:'affiliate_click',offerId:offer.id,articleSlug:body.articleSlug as string|undefined});
    return json({ok:true});
   }catch{return json({error:'invalid_event'},400);}
  }
  if(request.method!=='GET'&&request.method!=='HEAD')return json({error:'method_not_allowed'},405);
- if(['/style.css','/app.js','/admin.js','/favicon.svg','/og-image.png'].includes(path))return env.ASSETS.fetch(request);
+ if(['/style.css','/app.js','/analytics.js','/admin.js','/growth-admin.js','/favicon.svg','/og-image.png'].includes(path))return env.ASSETS.fetch(request);
  if(path==='/api/health'){
-  await env.DB.prepare('SELECT (SELECT COUNT(*) FROM articles) AS articles, (SELECT COUNT(*) FROM offers) AS offers, (SELECT COUNT(*) FROM events) AS events, (SELECT COUNT(*) FROM conversions) AS conversions, (SELECT COUNT(*) FROM source_checks) AS sources, (SELECT COUNT(*) FROM automation_runs) AS runs').first();return json({ok:true,service:'shigoto-dougu',database:'ready'});
+  await env.DB.prepare('SELECT (SELECT COUNT(*) FROM articles) AS articles, (SELECT COUNT(*) FROM offers) AS offers, (SELECT COUNT(*) FROM events) AS events, (SELECT COUNT(*) FROM conversions) AS conversions, (SELECT COUNT(*) FROM source_checks) AS sources, (SELECT COUNT(*) FROM automation_runs) AS runs, (SELECT COUNT(*) FROM growth_visits) AS visits, (SELECT COUNT(*) FROM growth_events) AS journey_events, (SELECT COUNT(*) FROM growth_hypotheses) AS hypotheses, (SELECT COUNT(*) FROM growth_evidence) AS evidence, (SELECT COUNT(*) FROM growth_campaigns) AS campaigns, (SELECT COUNT(*) FROM growth_observations) AS observations, (SELECT COUNT(*) FROM growth_decisions) AS decisions').first();return json({ok:true,service:'shigoto-dougu',database:'ready'});
  }
  if(path.startsWith('/api/'))return json({error:'not_found'},404);
  const origin=siteOrigin(env);

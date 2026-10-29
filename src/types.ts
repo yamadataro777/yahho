@@ -10,6 +10,7 @@ export interface Offer {
   id: string; name: string; category: OfferCategory; description: string;
   url: string; enabled: boolean; allowedHosts: string[];
   verifiedAt: string | null; expiresAt: string | null;
+  clickTracking?: { parameter: string; approved: true };
 }
 export interface Env {
   DB: D1Database;

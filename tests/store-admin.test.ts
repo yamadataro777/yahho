@@ -22,6 +22,7 @@ function statement(query: string, values: unknown[] = []) {
 beforeEach(() => {
   sql = new DatabaseSync(':memory:');
   sql.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  sql.exec(readFileSync(new URL('../migrations/0002_analytics.sql', import.meta.url), 'utf8'));
   env = { DB: { prepare: (query: string) => statement(query) }, ADMIN_TOKEN: token, CONVERSION_TOKEN: token } as unknown as Env;
 });
 afterEach(() => sql.close());

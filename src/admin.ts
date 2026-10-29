@@ -1,6 +1,7 @@
 import { ARTICLES, CATEGORIES, SOURCES } from './content';
 import { isAllowedOfferUrl, listOffers } from './store';
 import type { Article, Env, Offer } from './types';
+import { analyticsReport, ATTRIBUTION_DAYS, UUID, validateClickTracking } from './analytics';
 
 const BODY_LIMIT = 16_384;
 const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' };
@@ -69,7 +70,7 @@ export function validateOffer(body: Record<string, unknown>, now = Date.now()): 
   const category = text(body.category, 'category', 80);
   if (!idPattern.test(category)) throw new InputError('Invalid category');
   const description = text(body.description, 'description', 500);
-  // Keep the original signed ASP URL byte-for-byte; never add tracking parameters.
+  // Keep the original issued URL byte-for-byte; optional sub-ID use requires explicit ASP permission.
   const url = text(body.url, 'url', 4_096);
   const hosts = body.allowedHosts;
   if (!Array.isArray(hosts) || hosts.length > 12 || hosts.some(host => typeof host !== 'string')) throw new InputError('Invalid allowedHosts');
@@ -81,10 +82,12 @@ export function validateOffer(body: Record<string, unknown>, now = Date.now()): 
   if (verifiedAt && Date.parse(verifiedAt) > now) throw new InputError('verifiedAt cannot be in the future');
   if (body.enabled && !verifiedAt) throw new InputError('Confirm ASP approval and URL validity, then supply verifiedAt before enabling');
   if (body.enabled && expiresAt && Date.parse(expiresAt) <= now) throw new InputError('Cannot enable an expired offer');
-  return { id, name, category, description, url, allowedHosts, enabled: body.enabled, verifiedAt, expiresAt };
+  let clickTracking: Offer['clickTracking'];
+  try { clickTracking = validateClickTracking(body.clickTracking, url); } catch (error) { throw new InputError(error instanceof Error ? error.message : 'Invalid clickTracking'); }
+  return { id, name, category, description, url, allowedHosts, enabled: body.enabled, verifiedAt, expiresAt, ...(clickTracking ? { clickTracking } : {}) };
 }
 
-export interface ConversionInput { externalId: string; offerId: string; commissionJpy: number; occurredAt: string }
+export interface ConversionInput { externalId: string; offerId: string; commissionJpy: number; occurredAt: string; clickId?: string }
 
 export function isPublishableArticle(value: unknown, slug: string): value is Article {
   if (!value || typeof value !== 'object') return false;
@@ -113,25 +116,48 @@ export function validateConversion(body: Record<string, unknown>, now = Date.now
   if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < 0 || amount > 100_000_000) throw new InputError('commissionJpy must be a nonnegative integer of confirmed commission in JPY');
   const occurredAt = date(body.occurredAt, 'occurredAt', false)!;
   if (Date.parse(occurredAt) > now + 300_000) throw new InputError('occurredAt cannot be in the future');
-  return { externalId, offerId, commissionJpy: amount, occurredAt };
+  const clickId = body.clickId;
+  if (clickId !== undefined && (typeof clickId !== 'string' || !UUID.test(clickId))) throw new InputError('Invalid clickId; use the opaque identifier returned by the ASP');
+  return { externalId, offerId, commissionJpy: amount, occurredAt, ...(clickId ? { clickId: clickId as string } : {}) };
 }
 
 async function saveConversion(request: Request, env: Env): Promise<Response> {
   const input = validateConversion(await jsonBody(request));
+  type SavedConversion = { offer_id: string; commission_jpy: number; occurred_at: string; click_id: string | null };
+  const same = (row: SavedConversion | null) => row && row.offer_id === input.offerId && row.commission_jpy === input.commissionJpy && row.occurred_at === input.occurredAt && row.click_id === (input.clickId ?? null);
+  const existing = await env.DB.prepare('SELECT offer_id, commission_jpy, occurred_at, click_id FROM conversions WHERE external_id = ?').bind(input.externalId).first<SavedConversion>();
+  if (existing) return same(existing) ? reply({ ok: true, created: false }) : reply({ error: 'idempotency_conflict', message: 'This externalId already records different conversion data.' }, 409);
   const offer = await env.DB.prepare('SELECT id FROM offers WHERE id = ?').bind(input.offerId).first();
   if (!offer) return reply({ error: 'offer_not_found' }, 404);
-  const result = await env.DB.prepare(`INSERT INTO conversions(external_id, offer_id, commission_jpy, occurred_at, received_at)
-    VALUES (?, ?, ?, ?, ?) ON CONFLICT(external_id) DO NOTHING`)
-    .bind(input.externalId, input.offerId, input.commissionJpy, input.occurredAt, new Date().toISOString()).run();
-  if (result.meta.changes === 0) {
-    const existing = await env.DB.prepare('SELECT offer_id, commission_jpy, occurred_at FROM conversions WHERE external_id = ?')
-      .bind(input.externalId).first<{ offer_id: string; commission_jpy: number; occurred_at: string }>();
-    if (!existing || existing.offer_id !== input.offerId || existing.commission_jpy !== input.commissionJpy || existing.occurred_at !== input.occurredAt) {
-      return reply({ error: 'idempotency_conflict', message: 'This externalId already records different conversion data.' }, 409);
+  type Attribution = { source: string; campaign_id: string; landing_path: string; page_path: string; created_at: string; offer_id: string; tracked_click: number };
+  let attribution: Attribution | null = null;
+  if (input.clickId) {
+    attribution = await env.DB.prepare(`SELECT v.source, v.campaign_id, v.landing_path, e.page_path, e.created_at, e.offer_id, e.tracked_click
+      FROM growth_events e JOIN growth_visits v ON v.id=e.visit_id WHERE e.id=? AND e.kind='affiliate_click'`)
+      .bind(input.clickId).first<Attribution>();
+    const delta = attribution ? Date.parse(input.occurredAt) - Date.parse(attribution.created_at) : -1;
+    if (!attribution || attribution.offer_id !== input.offerId || attribution.tracked_click !== 1 || delta < 0 || delta > ATTRIBUTION_DAYS * 86_400_000) {
+      return reply({ error: 'invalid_click_attribution', message: 'The click must belong to this offer, support ASP sub-ID attribution, and precede conversion by at most 30 days.' }, 422);
     }
+  }
+  const result = await env.DB.prepare(`INSERT INTO conversions(external_id, offer_id, commission_jpy, occurred_at, received_at, click_id, attributed_source, attributed_campaign_id, attributed_landing_path, attributed_page_path)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(external_id) DO NOTHING`)
+    .bind(input.externalId, input.offerId, input.commissionJpy, input.occurredAt, new Date().toISOString(), input.clickId ?? null, attribution?.source ?? '', attribution?.campaign_id ?? '', attribution?.landing_path ?? '', attribution?.page_path ?? '').run();
+  if (!result.meta.changes) {
+    const stored = await env.DB.prepare('SELECT offer_id, commission_jpy, occurred_at, click_id FROM conversions WHERE external_id = ?').bind(input.externalId).first<SavedConversion>();
+    if (!same(stored)) return reply({ error: 'idempotency_conflict', message: 'This externalId already records different conversion data.' }, 409);
     return reply({ ok: true, created: false });
   }
   return reply({ ok: true, created: true }, 201);
+}
+
+async function reverseConversion(request: Request, env: Env): Promise<Response> {
+  const input = await jsonBody(request); const externalId = text(input.externalId, 'externalId', 128);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(externalId)) throw new InputError('Invalid externalId');
+  const existing = await env.DB.prepare('SELECT status FROM conversions WHERE external_id=?').bind(externalId).first<{ status: string }>();
+  if (!existing) return reply({ error: 'conversion_not_found' }, 404);
+  await env.DB.prepare("UPDATE conversions SET status='reversed', reversed_at=? WHERE external_id=? AND status='confirmed'").bind(new Date().toISOString(), externalId).run();
+  return reply({ ok: true, status: 'reversed', alreadyReversed: existing.status === 'reversed' });
 }
 
 export async function handleAdmin(request: Request, env: Env): Promise<Response | null> {
@@ -141,6 +167,14 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response 
   const denied = await authorize(request, webhook ? env.CONVERSION_TOKEN : env.ADMIN_TOKEN);
   if (denied) return denied;
   try {
+    if (path === '/api/admin/analytics') {
+      if (request.method !== 'GET') return reply({ error: 'method_not_allowed' }, 405);
+      return reply(await analyticsReport(env));
+    }
+    if (path === '/api/admin/conversions/reverse') {
+      if (request.method !== 'POST') return reply({ error: 'method_not_allowed' }, 405);
+      return await reverseConversion(request, env);
+    }
     if (webhook || path === '/api/admin/conversions') {
       if (request.method !== 'POST') return reply({ error: 'method_not_allowed' }, 405);
       return await saveConversion(request, env);
@@ -181,15 +215,16 @@ export async function handleAdmin(request: Request, env: Env): Promise<Response 
     }
     if (path === '/api/admin/status') {
       if (request.method !== 'GET') return reply({ error: 'method_not_allowed' }, 405);
-      const [events, conversions, offers, runs, sources] = await Promise.all([
+      const [events, conversions, offers, runs, sources, detailedClicks] = await Promise.all([
         env.DB.prepare('SELECT kind, COALESCE(SUM(count), 0) AS total FROM events GROUP BY kind').all<{ kind: string; total: number }>(),
-        env.DB.prepare('SELECT COUNT(*) AS count, COALESCE(SUM(commission_jpy), 0) AS revenue FROM conversions').first<{ count: number; revenue: number }>(),
+        env.DB.prepare("SELECT COUNT(*) AS count, COALESCE(SUM(commission_jpy), 0) AS revenue FROM conversions WHERE status = 'confirmed'").first<{ count: number; revenue: number }>(),
         listOffers(env),
         env.DB.prepare('SELECT * FROM automation_runs ORDER BY started_at DESC LIMIT 20').all(),
         env.DB.prepare('SELECT * FROM source_checks ORDER BY source_id').all(),
+        env.DB.prepare("SELECT COUNT(*) AS n FROM growth_events WHERE kind='affiliate_click'").first<{ n: number }>(),
       ]);
       const eventCounts = Object.fromEntries(events.results.map(row => [row.kind, row.total]));
-      return reply({ metrics: { diagnoses: eventCounts.diagnosis ?? 0, affiliateClicks: eventCounts.affiliate_click ?? 0, confirmedConversions: conversions?.count ?? 0, confirmedRevenueJpy: conversions?.revenue ?? 0 }, offers, runs: runs.results, sources: sources.results, automation: { enabled: env.ENABLE_AUTOPUBLISH === 'true', maxDailyArticles: Number(env.MAX_DAILY_ARTICLES ?? '1') }, revenueNote: 'Revenue includes only confirmed ASP commissions imported through the authenticated endpoint. Clicks are not revenue.' });
+      return reply({ metrics: { diagnoses: eventCounts.diagnosis ?? 0, affiliateClicks: (eventCounts.affiliate_click ?? 0) + (detailedClicks?.n ?? 0), confirmedConversions: conversions?.count ?? 0, confirmedRevenueJpy: conversions?.revenue ?? 0 }, offers, runs: runs.results, sources: sources.results, automation: { enabled: env.ENABLE_AUTOPUBLISH === 'true', maxDailyArticles: Number(env.MAX_DAILY_ARTICLES ?? '1') }, revenueNote: 'Revenue includes only confirmed ASP commissions imported through the authenticated endpoint. Clicks are not revenue.' });
     }
     return reply({ error: 'not_found' }, 404);
   } catch (error) {

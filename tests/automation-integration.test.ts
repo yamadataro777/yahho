@@ -1,6 +1,6 @@
 import { it, expect, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { runAutomation } from '../src/automation';
 import { listArticles, listOffers } from '../src/store';
 import { SOURCES } from '../src/content';
@@ -21,7 +21,7 @@ function article() {
 
 it('runs the publication, maintenance and daily locking pipeline against the actual SQLite migration', async () => {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  for (const name of readdirSync(new URL('../migrations/', import.meta.url)).filter(name => name.endsWith('.sql')).sort()) db.exec(readFileSync(new URL('../migrations/' + name, import.meta.url), 'utf8'));
   function statement(query: string, values: unknown[] = []) {
     return {
       bind(...args: unknown[]) { return statement(query, args); },
